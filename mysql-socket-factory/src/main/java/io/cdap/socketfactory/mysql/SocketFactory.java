@@ -1,0 +1,80 @@
+/*
+ * Copyright © 2020 Cask Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
+ * use this file except in compliance with the License. You may obtain a copy of
+ * the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+package io.cdap.socketfactory.mysql;
+
+import com.google.common.base.Strings;
+import com.mysql.cj.conf.PropertySet;
+import com.mysql.cj.protocol.ServerSession;
+import com.mysql.cj.protocol.SocketConnection;
+import io.cdap.socketfactory.BytesTrackingSocket;
+
+import java.io.Closeable;
+import java.io.IOException;
+import java.net.Socket;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * A MySQL socket factory that keeps track of the number of bytes written.
+ */
+public class SocketFactory implements com.mysql.cj.protocol.SocketFactory {
+  private static String delegateClass;
+  private static AtomicLong bytesWritten = new AtomicLong(0);
+
+  private Socket socket;
+
+  public static void setDelegateClass(String name) {
+    delegateClass = name;
+  }
+
+  public static long getBytesWritten() {
+    return bytesWritten.get();
+  }
+
+  @Override
+  public <T extends Closeable> T connect(
+    String host, int portNumber, PropertySet props, int loginTimeout) throws IOException {
+    if (Strings.isNullOrEmpty(delegateClass)) {
+      Socket delegate = javax.net.SocketFactory.getDefault().createSocket(host, portNumber);
+      socket = new BytesTrackingSocket(delegate, bytesWritten);
+    } else {
+      try {
+        com.google.cloud.sql.mysql.SocketFactory fac = (com.google.cloud.sql.mysql.SocketFactory) Class.forName(delegateClass).newInstance();
+        Socket delegate = fac.connect(host, portNumber, props, loginTimeout);
+        socket = new BytesTrackingSocket(delegate, bytesWritten);
+      } catch (ClassNotFoundException | InstantiationException | IllegalAccessException e) {
+        throw new IOException(String.format("Could not instantiate class %s", delegateClass), e);
+      }
+    }
+    return (T) socket;
+  }
+
+  @Override
+  public void beforeHandshake() {
+  }
+
+  @Override
+  public <T extends Closeable> T performTlsHandshake(
+    SocketConnection socketConnection, ServerSession serverSession) throws IOException {
+    @SuppressWarnings("unchecked")
+    T sock = (T) socketConnection.getMysqlSocket();
+    return sock;
+  }
+
+  @Override
+  public void afterHandshake() {
+  }
+}
